@@ -7,20 +7,58 @@ useDotenv: true
 provider:
   name: aws
   runtime: nodejs20.x
-  region: ${opt:region, env:AWS_REGION, env:REGION}
+  region: ${opt:region, env:AWS_REGION, env:REGION, 'ap-southeast-1'}
   stage: ${opt:stage, 'dev'}
   memorySize: 512
-  timeout: 10
+  timeout: 15
   environment:
     NODE_ENV: ${self:provider.stage}
     DATABASE_URL: ${env:DATABASE_URL, ''}
     AWS_REGION: ${self:provider.region}
+    BOOKING_QUEUE_URL: !Ref BookingQueue
+    SNS_TOPIC_ARN: !Ref TicketNotificationTopic
+    EVENT_BUS_NAME: default
   httpApi:
     cors: true
+    authorizers:
+      cognitoAuthorizer:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl:
+          Fn::Sub: https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPool}
+        audience:
+          - Ref: CognitoUserPoolClient
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - sqs:SendMessage
+            - sqs:ReceiveMessage
+            - sqs:DeleteMessage
+            - sqs:GetQueueAttributes
+          Resource:
+            - Fn::GetAtt: [BookingQueue, Arn]
+        - Effect: Allow
+          Action:
+            - events:PutEvents
+          Resource:
+            - Fn::Sub: arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default
+        - Effect: Allow
+          Action:
+            - sns:Publish
+          Resource:
+            - Ref: TicketNotificationTopic
+        - Effect: Allow
+          Action:
+            - states:StartExecution
+          Resource:
+            - Fn::Sub: arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*
 
 plugins:
   - serverless-esbuild
   - serverless-offline
+  - serverless-step-functions
 
 custom:
   esbuild:
@@ -42,6 +80,9 @@ functions:
           path: health
           method: get
           cors: true
+      - httpApi:
+          path: /health
+          method: get
 
   getEvents:
     handler: src/handlers/getEvents.handler
@@ -50,6 +91,9 @@ functions:
           path: events
           method: get
           cors: true
+      - httpApi:
+          path: /events
+          method: get
 
   getTicketTiers:
     handler: src/handlers/getTicketTiers.handler
@@ -58,14 +102,39 @@ functions:
           path: tickets/tiers
           method: get
           cors: true
+      - httpApi:
+          path: /tickets/tiers
+          method: get
 
-  bookSeat:
-    handler: src/handlers/bookSeat.handler
+  enqueueBooking:
+    handler: src/handlers/enqueueBooking.handler
     events:
       - http:
           path: tickets/book
           method: post
           cors: true
+      - httpApi:
+          path: /tickets/book
+          method: post
+
+  bookSeat:
+    handler: src/handlers/bookSeat.handler
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt: [BookingQueue, Arn]
+          batchSize: 1
+
+  simulatePayment:
+    handler: src/handlers/simulatePayment.handler
+    events:
+      - http:
+          path: tickets/simulate-payment
+          method: post
+          cors: true
+      - httpApi:
+          path: /tickets/simulate-payment
+          method: post
 
   getBookingStatus:
     handler: src/handlers/getBookingStatus.handler
@@ -74,7 +143,105 @@ functions:
           path: bookings/status
           method: get
           cors: true
+      - httpApi:
+          path: /bookings/status
+          method: get
 
   initDB:
     handler: src/handlers/initDB.handler
     timeout: 30
+
+  generateTicketPdf:
+    handler: src/handlers/generateTicketPdf.handler
+    timeout: 30
+
+  broadcastNotification:
+    handler: src/handlers/broadcastNotification.handler
+    timeout: 15
+
+  getAdminStats:
+    handler: src/handlers/getAdminStats.handler
+    events:
+      - httpApi:
+          path: /admin/stats
+          method: get
+          authorizer:
+            name: cognitoAuthorizer
+      - http:
+          path: admin/stats
+          method: get
+          cors: true
+
+stepFunctions:
+  stateMachines:
+    orderProcessingStateMachine:
+      name: order-processing-${self:provider.stage}
+      events:
+        - eventBridge:
+            eventBus: default
+            pattern:
+              source:
+                - ticket.booking
+              detail-type:
+                - OrderPaid
+      definition:
+        Comment: "Enterprise Orchestration Workflow for Paid Concert Orders"
+        StartAt: GenerateTicketPdf
+        States:
+          GenerateTicketPdf:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [generateTicketPdf, Arn]
+            Next: BroadcastNotification
+            Retry:
+              - ErrorEquals: ["States.ALL"]
+                IntervalSeconds: 2
+                MaxAttempts: 2
+                BackoffRate: 2
+          BroadcastNotification:
+            Type: Task
+            Resource:
+              Fn::GetAtt: [broadcastNotification, Arn]
+            End: true
+            Retry:
+              - ErrorEquals: ["States.ALL"]
+                IntervalSeconds: 2
+                MaxAttempts: 2
+                BackoffRate: 2
+
+resources:
+  Resources:
+    BookingQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ticket-booking-queue-${self:provider.stage}
+        VisibilityTimeout: 60
+        MessageRetentionPeriod: 86400
+
+    TicketNotificationTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: ticket-booking-notifications-${self:provider.stage}
+
+    CognitoUserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: ticket-booking-userpool-${self:provider.stage}
+        UsernameAttributes:
+          - email
+        AutoVerifiedAttributes:
+          - email
+        AdminCreateUserConfig:
+          AllowAdminCreateUserOnly: false
+
+    CognitoUserPoolClient:
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        ClientName: ticket-booking-client-${self:provider.stage}
+        UserPoolId:
+          Ref: CognitoUserPool
+        ExplicitAuthFlows:
+          - ALLOW_USER_PASSWORD_AUTH
+          - ALLOW_REFRESH_TOKEN_AUTH
+          - ALLOW_USER_SRP_AUTH
+        GenerateSecret: false

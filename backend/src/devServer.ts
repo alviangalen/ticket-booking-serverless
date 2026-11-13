@@ -1,12 +1,16 @@
 import http from "http";
 import url from "url";
-import { APIGatewayProxyEvent, Context } from "aws-lambda";
+import { APIGatewayProxyEvent, Context, SQSEvent } from "aws-lambda";
 import { handler as healthHandler } from "./handlers/health";
 import { handler as getEventsHandler } from "./handlers/getEvents";
 import { handler as getTicketTiersHandler } from "./handlers/getTicketTiers";
+import { handler as enqueueBookingHandler } from "./handlers/enqueueBooking";
 import { handler as bookSeatHandler } from "./handlers/bookSeat";
+import { handler as simulatePaymentHandler } from "./handlers/simulatePayment";
 import { handler as getBookingStatusHandler } from "./handlers/getBookingStatus";
 import { handler as initDBHandler } from "./handlers/initDB";
+import { handler as getAdminStatsHandler } from "./handlers/getAdminStats";
+import { prisma } from "./db/client";
 
 const PORT = process.env.PORT || 3000;
 
@@ -33,7 +37,16 @@ function createLambdaEvent(req: http.IncomingMessage, body: string, parsedUrl: u
     queryStringParameters: Object.keys(queryParams).length > 0 ? queryParams : null,
     multiValueQueryStringParameters: null,
     stageVariables: null,
-    requestContext: {} as any,
+    requestContext: {
+      authorizer: {
+        jwt: {
+          claims: {
+            email: "operator@sheilaon7.id",
+            sub: "local-dev-operator-uuid",
+          },
+        },
+      },
+    } as any,
     resource: "",
   };
 }
@@ -92,9 +105,72 @@ const server = http.createServer(async (req, res) => {
       } else if (pathname === "/tickets/tiers" && req.method === "GET") {
         result = await (getTicketTiersHandler as any)(lambdaEvent, mockContext, () => {});
       } else if (pathname === "/tickets/book" && req.method === "POST") {
-        result = await (bookSeatHandler as any)(lambdaEvent, mockContext, () => {});
+        // If SQS queue is configured, enqueue normally; otherwise or in local dev,
+        // execute enqueue + immediate SQS worker simulation for seamless local testing
+        if (process.env.BOOKING_QUEUE_URL) {
+          result = await (enqueueBookingHandler as any)(lambdaEvent, mockContext, () => {});
+        } else {
+          // Dev fallback: Simulate SQS dispatch and consumer invocation locally
+          console.log("[devServer] Simulating local SQS Queue dispatch -> Worker execution...");
+          const sqsMockEvent: SQSEvent = {
+            Records: [
+              {
+                messageId: `mock-msg-${Date.now()}`,
+                receiptHandle: "mock-receipt-handle",
+                body: rawBody,
+                attributes: {} as any,
+                messageAttributes: {},
+                md5OfBody: "mock-md5",
+                eventSource: "aws:sqs",
+                eventSourceARN: "arn:aws:sqs:local:123456789012:ticket-booking-queue-dev",
+                awsRegion: "local",
+              },
+            ],
+          };
+
+          await (bookSeatHandler as any)(sqsMockEvent, mockContext, () => {});
+
+          // Fetch the created booking to return to client in dev mode
+          const parsed = JSON.parse(rawBody);
+          const latestBooking = await prisma.booking.findFirst({
+            where: { customerEmail: parsed.customerEmail.toLowerCase().trim() },
+            orderBy: { createdAt: "desc" },
+            include: { ticketTier: true },
+          });
+
+          result = {
+            statusCode: 200,
+            headers: {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*",
+            },
+            body: JSON.stringify({
+              success: true,
+              data: latestBooking
+                ? {
+                    bookingId: latestBooking.id,
+                    bookingCode: latestBooking.bookingCode,
+                    tierName: latestBooking.ticketTier.name,
+                    customerName: latestBooking.customerName,
+                    customerEmail: latestBooking.customerEmail,
+                    quantity: latestBooking.quantity,
+                    totalPrice: latestBooking.totalPrice,
+                    paymentMethod: latestBooking.paymentMethod,
+                    paymentStatus: latestBooking.paymentStatus,
+                    qrPayload: latestBooking.qrPayload,
+                    createdAt: latestBooking.createdAt.toISOString(),
+                  }
+                : { status: "QUEUED" },
+              message: "Pemesanan berhasil diproses via simulasi SQS queue.",
+            }),
+          };
+        }
+      } else if (pathname === "/tickets/simulate-payment" && req.method === "POST") {
+        result = await (simulatePaymentHandler as any)(lambdaEvent, mockContext, () => {});
       } else if (pathname === "/bookings/status" && req.method === "GET") {
         result = await (getBookingStatusHandler as any)(lambdaEvent, mockContext, () => {});
+      } else if (pathname === "/admin/stats" && req.method === "GET") {
+        result = await (getAdminStatsHandler as any)(lambdaEvent, mockContext, () => {});
       } else if (pathname === "/init-db" && (req.method === "POST" || req.method === "GET")) {
         result = await (initDBHandler as any)(lambdaEvent, mockContext, () => {});
       } else {
@@ -102,7 +178,7 @@ const server = http.createServer(async (req, res) => {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*",
         });
-        res.end(JSON.stringify({ success: false, error: "Route not found" }));
+        res.end(JSON.stringify({ success: false, error: `Route not found: ${pathname}` }));
         return;
       }
 
@@ -127,12 +203,18 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Local API Gateway Dev Server running at http://localhost:${PORT}/dev`);
-  console.log(`Endpoints available:`);
+  console.log(`=======================================================`);
+  console.log(`Local Enterprise API Gateway Dev Server running!`);
+  console.log(`Base URL: http://localhost:${PORT}/dev`);
+  console.log(`-------------------------------------------------------`);
+  console.log(`Endpoints:`);
   console.log(` - GET  /dev/health`);
   console.log(` - GET  /dev/events`);
   console.log(` - GET  /dev/tickets/tiers`);
-  console.log(` - POST /dev/tickets/book`);
+  console.log(` - POST /dev/tickets/book (SQS queue + OCC worker)`);
+  console.log(` - POST /dev/tickets/simulate-payment (EventBridge OrderPaid)`);
   console.log(` - GET  /dev/bookings/status`);
-  console.log(` - POST /dev/init-db (manual DB initialization)`);
+  console.log(` - GET  /dev/admin/stats (Cognito protected)`);
+  console.log(` - POST /dev/init-db (Database schema & seeding)`);
+  console.log(`=======================================================`);
 });

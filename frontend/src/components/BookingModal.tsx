@@ -104,13 +104,21 @@ export const BookingModal: React.FC<BookingModalProps> = ({ booking, onClose }) 
               </div>
             </div>
 
-            {/* Total Paid */}
+            {/* Total Paid / Status */}
             <div className="border-t-2 border-dashed border-outline pt-3 flex justify-between items-center text-xs sm:text-sm">
               <span className="font-bold text-on-surface-variant uppercase">
-                Status Pembayaran:
+                Status Pemesanan:
               </span>
-              <span className="px-2.5 py-0.5 rounded bg-green-100 text-green-800 font-bold border border-green-700">
-                LUNAS ({booking.paymentMethod.toUpperCase()})
+              <span
+                className={`px-2.5 py-0.5 rounded font-bold border ${
+                  booking.paymentStatus === "PAID"
+                    ? "bg-green-100 text-green-800 border-green-700"
+                    : "bg-amber-100 text-amber-900 border-amber-700"
+                }`}
+              >
+                {booking.paymentStatus === "PAID"
+                  ? `LUNAS (${(booking.paymentMethod || "QRIS").toUpperCase()})`
+                  : `DALAM ANTREAN // ${booking.status || "PENDING"}`}
               </span>
             </div>
           </div>

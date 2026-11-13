@@ -1,21 +1,33 @@
-import { APIGatewayProxyHandler } from "aws-lambda";
+import { SQSEvent, SQSHandler } from "aws-lambda";
 import { prisma } from "../db/client";
-import { errorResponse, successResponse } from "../utils/apiResponse";
 import { BookSeatRequest, BookingResponseData } from "../utils/types";
 
 // Maximum retries for optimistic lock conflict under heavy "war tiket" traffic
 const MAX_LOCK_RETRIES = 3;
 
-export const handler: APIGatewayProxyHandler = async (event) => {
-  if (!event.body) {
-    return errorResponse("Request body is required", 400);
+/**
+ * SQS Consumer Handler for Booking Execution
+ * 
+ * Subscribed to Amazon SQS (BookingQueue).
+ * Decoupled from the HTTP request cycle to ensure maximum throughput and stability.
+ * Wraps the core domain logic: Optimistic Concurrency Control (OCC) for ticket drops.
+ */
+export const handler: SQSHandler = async (event: SQSEvent) => {
+  console.log(`[bookSeat] SQS event received with ${event.Records.length} record(s).`);
+
+  if (!event.Records || event.Records.length === 0) {
+    console.warn("[bookSeat] No SQS records found in event payload.");
+    return;
   }
 
+  // Parse the record body (event.Records[0].body)
+  const rawBody = event.Records[0].body;
   let parsed: BookSeatRequest;
   try {
-    parsed = JSON.parse(event.body);
-  } catch {
-    return errorResponse("Invalid JSON in request body", 400);
+    parsed = typeof rawBody === "string" ? JSON.parse(rawBody) : rawBody;
+  } catch (err) {
+    console.error("[bookSeat] Failed to parse SQS record body as JSON:", rawBody, err);
+    throw new Error("INVALID_SQS_PAYLOAD");
   }
 
   const {
@@ -27,27 +39,11 @@ export const handler: APIGatewayProxyHandler = async (event) => {
     paymentMethod,
   } = parsed;
 
-  // Strict Validation
-  if (!ticketTierId || typeof ticketTierId !== "string") {
-    return errorResponse("ticketTierId is required", 400);
-  }
-  if (!customerName || customerName.trim().length < 3) {
-    return errorResponse("customerName must be at least 3 characters", 400);
-  }
-  if (!customerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
-    return errorResponse("Valid customerEmail is required", 400);
-  }
-  if (!customerPhone || customerPhone.trim().length < 8) {
-    return errorResponse("Valid customerPhone is required", 400);
-  }
-  if (!quantity || quantity < 1 || quantity > 4) {
-    return errorResponse("Quantity must be between 1 and 4 tickets per transaction", 400);
-  }
-  if (!paymentMethod || !["qris", "va"].includes(paymentMethod)) {
-    return errorResponse("paymentMethod must be 'qris' or 'va'", 400);
-  }
+  console.log(
+    `[bookSeat] Processing booking from SQS: tier=${ticketTierId}, qty=${quantity}, customer=${customerEmail}`
+  );
 
-  // AGENTS.md Rule 3: Concurrency & Locking for ticket booking ("war tiket")
+  // Core Domain Logic: Optimistic Concurrency Control ("War Tiket" Protection)
   for (let attempt = 1; attempt <= MAX_LOCK_RETRIES; attempt++) {
     try {
       const result = await prisma.$transaction(async (tx) => {
@@ -104,7 +100,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
           verified: true,
         });
 
-        // 4. Create the booking entry
+        // 4. Create the booking entry (initial status: PENDING awaiting payment verification)
         const booking = await tx.booking.create({
           data: {
             bookingCode,
@@ -115,7 +111,7 @@ export const handler: APIGatewayProxyHandler = async (event) => {
             quantity,
             totalPrice,
             paymentMethod,
-            paymentStatus: "PAID",
+            paymentStatus: "PENDING",
             qrPayload,
           },
           include: {
@@ -140,40 +136,36 @@ export const handler: APIGatewayProxyHandler = async (event) => {
         createdAt: result.createdAt.toISOString(),
       };
 
-      return successResponse(
-        responseData,
-        "Pemesanan tiket berhasil dikonfirmasi! E-tiket telah diterbitkan.",
-        201
+      console.log(
+        `[bookSeat] Booking successfully created: id=${responseData.bookingId}, code=${responseData.bookingCode}, status=${responseData.paymentStatus}`
       );
+      return;
     } catch (err: unknown) {
       if (err instanceof Error) {
         if (err.message === "TIER_NOT_FOUND") {
-          return errorResponse("Kategori tiket tidak ditemukan.", 404);
+          console.error(`[bookSeat] Ticket tier not found: ${ticketTierId}`);
+          return;
         }
         if (err.message === "INSUFFICIENT_QUOTA") {
-          return errorResponse(
-            "Maaf, tiket untuk kategori ini sudah habis terjual (Sold Out).",
-            409
-          );
+          console.warn(`[bookSeat] Insufficient quota for tier ${ticketTierId}. Sold out.`);
+          return;
         }
         if (err.message === "CONCURRENCY_CONFLICT") {
-          // If conflict occurred during war tiket, retry with exponential jitter
+          console.warn(
+            `[bookSeat] Concurrency conflict detected on attempt ${attempt}/${MAX_LOCK_RETRIES}. Retrying...`
+          );
           if (attempt < MAX_LOCK_RETRIES) {
             const backoff = Math.floor(Math.random() * 50) + attempt * 30;
             await new Promise((res) => setTimeout(res, backoff));
             continue;
           }
-          return errorResponse(
-            "Trafik pemesanan sangat padat (War Tiket). Silakan coba beberapa saat lagi.",
-            409
-          );
+          console.error("[bookSeat] Max lock retries exceeded under high concurrency.");
+          throw err;
         }
       }
 
-      const message = err instanceof Error ? err.message : "Internal server error";
-      return errorResponse(`Gagal memproses pemesanan: ${message}`, 500);
+      console.error("[bookSeat] Unexpected error while processing booking transaction:", err);
+      throw err;
     }
   }
-
-  return errorResponse("Gagal mengamankan tiket setelah beberapa percobaan. Silakan coba lagi.", 409);
 };

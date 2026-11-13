@@ -1,0 +1,54 @@
+name: Backend CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy-backend:
+    name: Deploy Serverless Backend to AWS (Prod)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Runtime (v20)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: backend/package.json
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+
+      - name: Install Backend Dependencies
+        run: |
+          npm ci || npm install
+
+      - name: Generate Prisma ORM Client
+        run: |
+          npx prisma generate
+
+      - name: Deploy Serverless Framework Stack (Production)
+        run: |
+          npx serverless deploy --stage prod
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+          STAGE: prod
+

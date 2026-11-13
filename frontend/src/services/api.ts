@@ -1,6 +1,14 @@
-import { ApiResponse, BookingRequest, BookingResult, ConcertEvent, TicketTier } from "../types";
+import {
+  ApiResponse,
+  BookingRequest,
+  BookingResult,
+  ConcertEvent,
+  TicketTier,
+  AdminStatsData,
+  PaymentSimulationResult,
+} from "../types";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL;
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:3000/dev";
 
 export const apiService = {
   /**
@@ -40,7 +48,7 @@ export const apiService = {
   },
 
   /**
-   * Submit ticket booking with concurrency & locking protection to API Gateway
+   * Submit ticket booking (Enqueues to SQS or executes transaction)
    */
   async bookTicket(payload: BookingRequest): Promise<BookingResult> {
     const response = await fetch(`${API_BASE_URL}/tickets/book`, {
@@ -76,6 +84,59 @@ export const apiService = {
     if (!json.success || !json.data) {
       return null;
     }
+    return json.data;
+  },
+
+  /**
+   * Fetch real-time Admin Metrics and Promoter Dashboard data
+   */
+  async getAdminStats(authToken?: string): Promise<AdminStatsData> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (authToken) {
+      headers["Authorization"] = `Bearer ${authToken}`;
+    }
+
+    const response = await fetch(`${API_BASE_URL}/admin/stats`, {
+      method: "GET",
+      headers,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Gagal mengambil statistik admin (${response.status}: ${response.statusText})`);
+    }
+
+    const json: ApiResponse<AdminStatsData> = await response.json();
+    if (!json.success || !json.data) {
+      throw new Error(json.error || "Data statistik admin kosong atau tidak valid.");
+    }
+
+    return json.data;
+  },
+
+  /**
+   * Simulate payment confirmation and trigger EventBridge OrderPaid event
+   */
+  async simulatePayment(bookingIdentifier: string): Promise<PaymentSimulationResult> {
+    const response = await fetch(`${API_BASE_URL}/tickets/simulate-payment`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ bookingId: bookingIdentifier }),
+    });
+
+    const json: ApiResponse<PaymentSimulationResult> = await response.json();
+
+    if (!response.ok || !json.success) {
+      throw new Error(json.error || "Gagal melakukan simulasi pembayaran.");
+    }
+
+    if (!json.data) {
+      throw new Error("Respon simulasi pembayaran tidak valid.");
+    }
+
     return json.data;
   },
 };

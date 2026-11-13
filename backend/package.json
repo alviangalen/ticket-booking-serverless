@@ -1,7 +1,7 @@
 {
   "name": "ticket-booking-backend",
   "version": "1.0.0",
-  "description": "Serverless Backend for Concert Ticket Booking with Concurrency Control",
+  "description": "Enterprise Event-Driven Serverless Backend for Concert Ticket Booking",
   "main": "src/handlers/health.ts",
   "scripts": {
     "dev": "ts-node src/devServer.ts",
@@ -13,6 +13,9 @@
     "prisma:seed": "ts-node src/db/seed.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-eventbridge": "^3.600.0",
+    "@aws-sdk/client-sns": "^3.600.0",
+    "@aws-sdk/client-sqs": "^3.600.0",
     "@prisma/client": "^5.22.0",
     "dotenv": "^16.4.5"
   },
@@ -20,6 +23,7 @@
     "@types/aws-lambda": "^8.10.145",
     "@types/node": "^20.14.0",
     "prisma": "^5.22.0",
+    "serverless-step-functions": "^3.19.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5"
   }

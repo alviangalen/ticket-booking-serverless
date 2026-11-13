@@ -9,6 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@aws-amplify/ui-react": "^6.5.5",
+    "aws-amplify": "^6.6.6",
     "canvas-confetti": "^1.9.4",
     "lucide-react": "^0.460.0",
     "qrcode.react": "^4.1.0",

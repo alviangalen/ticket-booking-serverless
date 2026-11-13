@@ -62,6 +62,12 @@ export const Navbar: React.FC = () => {
             >
               Berita
             </a>
+            <a
+              href="/admin"
+              className="text-xs font-mono font-bold text-[#760009] bg-[#ffedd5] px-2.5 py-1 border-2 border-black shadow-[2px_2px_0px_#000] hover:translate-x-0.5 hover:translate-y-0.5 hover:shadow-none transition-all uppercase tracking-wider"
+            >
+              Admin Panel
+            </a>
           </nav>
 
           {/* Trailing Primary Action */}
@@ -122,6 +128,13 @@ export const Navbar: React.FC = () => {
               className="block text-on-surface-variant hover:text-primary py-1"
             >
               Berita &amp; Panduan
+            </a>
+            <a
+              href="/admin"
+              onClick={() => setMobileMenuOpen(false)}
+              className="block font-mono font-bold text-[#760009] bg-[#ffedd5] px-3 py-1.5 border-2 border-black text-xs uppercase"
+            >
+              Admin Panel // Operator Console
             </a>
             <div className="pt-2">
               <a

@@ -1,6 +1,55 @@
 # Concert Ticket Booking Platform (Sheila on 7 • Kisah Klasik Festival 2026)
+### Enterprise Event-Driven Serverless Architecture
 
-Monorepo Serverless Web App untuk pemesanan tiket konser Sheila on 7 dengan proteksi concurrency tinggi ("War Tiket"). Didesain berdasarkan Design System Google Stitch **"Kisik-Indie Concert Flow"** (Meadow Festival Red Edition) dengan estetika retro-analog berpadu modern tactile UI.
+Monorepo Serverless Web App untuk pemesanan tiket konser Sheila on 7 dengan proteksi concurrency tinggi ("War Tiket") dan **Enterprise Event-Driven Architecture (EDA)**. Didesain berdasarkan Design System Google Stitch **"Kisik-Indie Concert Flow"** (Meadow Festival Red Edition) dengan estetika retro-analog berpadu modern tactile UI.
+
+---
+
+## Arsitektur Sistem (Enterprise Event-Driven Architecture)
+
+Aplikasi telah dimigrasikan ke arsitektur event-driven yang sepenuhnya ter-decoupling dan tahan beban tinggi:
+
+```
+[ Frontend React (Port 5173) ]
+           │
+           ▼  POST /tickets/book
+[ API Gateway (Port 3000) ]
+           │
+           ▼
+[ Lambda: enqueueBooking ] ──(Enqueues raw payload)──► [ Amazon SQS: BookingQueue ]
+                                                                   │
+                                                      (BatchSize: 1, SQS Trigger)
+                                                                   ▼
+                                                       [ Lambda: bookSeat ]
+                                                                   │
+                                                (Optimistic Concurrency Control +
+                                                 Prisma Atomic Transaction Lock)
+                                                                   ▼
+                                                       [ PostgreSQL (Amazon RDS) ]
+                                                                   ▲
+                                                                   │
+[ Frontend Admin / Webhook ] ── POST /tickets/simulate-payment ────┤
+                                                                   ▼
+                                                       [ Lambda: simulatePayment ]
+                                                                   │ (Updates to PAID)
+                                                                   ▼
+                                                       [ Amazon EventBridge ]
+                                                       Bus: default
+                                                       Source: ticket.booking
+                                                       DetailType: OrderPaid
+                                                                   │
+                                                                   ▼
+                                                       [ AWS Step Functions ]
+                                                    (OrderProcessingStateMachine)
+                                                                   │
+                                                ┌──────────────────┴──────────────────┐
+                                                ▼                                     ▼
+                                      Step 1: [generateTicketPdf]           Step 2: [broadcastNotification]
+                                      (Simulate S3 PDF Generation)                    │
+                                                                                      ▼
+                                                                           [ Amazon SNS Topic ]
+                                                                       (TicketNotificationTopic)
+```
 
 ---
 
@@ -8,28 +57,33 @@ Monorepo Serverless Web App untuk pemesanan tiket konser Sheila on 7 dengan prot
 
 - **Frontend (`/frontend`)**:
   - React 18, Vite, TypeScript
-  - Tailwind CSS (desain tactile cards, perforated ticket stubs, custom hard shadows)
+  - Tailwind CSS (desain tactile cards, perforated ticket stubs, custom hard shadows `border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]`)
+  - AWS Amplify Authenticator (`@aws-amplify/ui-react`) untuk proteksi rute `/admin`
   - QR Code generator (`qrcode.react`) & Confetti celebration (`canvas-confetti`)
-  - Centralized API Service (`src/services/api.ts`) tanpa mock/dummy data
+  - Centralized API Service (`src/services/api.ts`)
   - Target Deployment: **AWS Amplify**
 
 - **Backend (`/backend`)**:
   - Node.js 20, TypeScript, Serverless Framework (`serverless.yml`)
-  - Target Deployment: **AWS API Gateway + AWS Lambda**
+  - Amazon SQS: `BookingQueue` untuk menyerap trafik lonjakan ("war tiket")
+  - Amazon EventBridge: Event bus default untuk sinyal domain `OrderPaid`
+  - AWS Step Functions: State Machine orchestrator beruntun (`generateTicketPdf` → `broadcastNotification`)
+  - Amazon SNS: `TicketNotificationTopic` untuk notifikasi e-tiket multi-kanal
+  - Amazon Cognito: User Pool & Client dengan JWT Authorizer pada HTTP API
   - Database: **PostgreSQL (Amazon RDS)** via **Prisma ORM**
-  - Concurrency Control: **Optimistic Concurrency Locking** via `@default(0) version` & Prisma atomic interactive transactions untuk mencegah double-booking saat trafik tinggi ("War Tiket").
+  - Concurrency Control: **Optimistic Concurrency Locking** via `@default(0) version` & Prisma atomic interactive transactions
+  - Target Deployment: **AWS API Gateway + AWS Lambda**
 
 ---
 
 ## Port & Layanan yang Digunakan (Ports & Services)
 
-Berikut adalah daftar port dan layanan yang digunakan dalam lingkungan pengembangan (development) monorepo ini:
-
 | Layanan / Service | Lingkungan | Port | URL / Connection String | Keterangan |
 | :--- | :--- | :--- | :--- | :--- |
-| **Frontend Web App** | Vite Dev Server | **`5173`** | `http://localhost:5173` | UI React client untuk pemesanan tiket, live countdown, dan e-ticket modal (dikonfigurasi di `vite.config.ts`). |
-| **Backend API Gateway** | Local Dev / Serverless | **`3000`** | `http://localhost:3000/dev` | Simulasi AWS API Gateway & Lambda handlers lokal (`src/devServer.ts` / Serverless Offline). |
-| **Database PostgreSQL** | Docker Container | **`5433`** | `postgresql://postgres:postgres@localhost:5433/ticket_booking?schema=public` | Container PostgreSQL `ticket-postgres` dipetakan ke port host `5433` (menghindari konflik dengan Postgres sistem di `5432`). |
+| **Frontend Web App** | Vite Dev Server | **`5173`** | `http://localhost:5173` | UI React client untuk pemesanan tiket, live countdown, dan e-ticket modal. |
+| **Frontend Admin Panel** | Vite Dev Server | **`5173`** | `http://localhost:5173/admin` | Operator Console promotor terlindungi Cognito Authenticator. |
+| **Backend API Gateway** | Local Dev / Serverless | **`3000`** | `http://localhost:3000/dev` | Simulasi AWS API Gateway & Lambda handlers lokal (`src/devServer.ts`). |
+| **Database PostgreSQL** | Docker Container | **`5433`** | `postgresql://postgres:postgres@localhost:5433/ticket_booking?schema=public` | Container PostgreSQL `ticket-postgres` dipetakan ke port host `5433`. |
 | **Database PostgreSQL** | Amazon RDS (Prod) | **`5432`** | `postgresql://<user>:<password>@<rds-endpoint>:5432/ticket_booking?schema=public` | Port standar PostgreSQL pada deployment cloud Amazon RDS. |
 
 ---
@@ -38,12 +92,17 @@ Berikut adalah daftar port dan layanan yang digunakan dalam lingkungan pengemban
 
 ```
 ticket-booking/
+├── .github/
+│   └── workflows/
+│       ├── frontend-deploy.yml   # CI/CD: Build and verify React frontend
+│       └── backend-deploy.yml    # CI/CD: Serverless deploy backend to AWS Prod
+│
 ├── frontend/                     # React UI application (Target: AWS Amplify)
 │   ├── public/
 │   │   └── hero-concert.jpg      # Aset visual konser lokal resolusi tinggi
 │   ├── src/
 │   │   ├── components/           # Reusable tactile UI components
-│   │   │   ├── Navbar.tsx        # Announcement ribbon, logo SO7, navigation
+│   │   │   ├── Navbar.tsx        # Announcement ribbon, logo SO7, nav + Admin button
 │   │   │   ├── Hero.tsx          # Billboard hero 30 Tahun Kisah Klasik
 │   │   │   ├── Countdown.tsx     # Scoreboard analog hitung mundur live
 │   │   │   ├── Lineup.tsx        # Lineup musisi & bintang tamu
@@ -54,27 +113,22 @@ ticket-booking/
 │   │   │   ├── VenueInfo.tsx     # Info GBK Senayan & akses transportasi
 │   │   │   └── Footer.tsx        # Info promotor & mitra resmi
 │   │   ├── pages/
-│   │   │   └── HomePage.tsx      # Main layout pemesanan tiket
+│   │   │   ├── HomePage.tsx      # Main layout pemesanan tiket publik
+│   │   │   └── AdminPage.tsx     # Retro-Analog Operator Console (Cognito Authenticator)
 │   │   ├── services/
 │   │   │   └── api.ts            # Centralized API service ke API Gateway
 │   │   ├── types/
-│   │   │   └── index.ts          # Strict TypeScript interfaces
-│   │   ├── App.tsx
-│   │   ├── index.css             # Perforation notches, hard shadows & animations
-│   │   ├── main.tsx
-│   │   └── vite-env.d.ts
-│   ├── .env                      # VITE_API_URL
-│   ├── .env.example
-│   ├── index.html                # Google Fonts Bricolage Grotesque & Space Grotesk
-│   ├── package.json
-│   ├── postcss.config.js
-│   ├── tailwind.config.js        # Design tokens Google Stitch
-│   ├── tsconfig.json
+│   │   │   ├── index.ts          # Strict TypeScript interfaces
+│   │   │   └── amplify.d.ts      # Typing definitions for AWS Amplify UI
+│   │   ├── App.tsx               # Client-side routing (/ dan /admin)
+│   │   ├── index.css             # Tactile cards, hard shadows & animations
+│   │   └── main.tsx
+│   ├── package.json              # Include @aws-amplify/ui-react & aws-amplify
 │   └── vite.config.ts            # Server port 5173
 │
-├── backend/                      # Serverless API (Target: AWS API Gateway + Lambda)
+├── backend/                      # Serverless API (Target: AWS Lambda + EDA)
 │   ├── prisma/
-│   │   └── schema.prisma         # Event, TicketTier (with version lock), Booking
+│   │   └── schema.prisma         # Event, TicketTier (version lock), Booking
 │   ├── src/
 │   │   ├── db/
 │   │   │   ├── client.ts         # Prisma client singleton (reused across warm Lambdas)
@@ -83,18 +137,21 @@ ticket-booking/
 │   │   │   ├── health.ts         # GET /health
 │   │   │   ├── getEvents.ts      # GET /events
 │   │   │   ├── getTicketTiers.ts # GET /tickets/tiers
-│   │   │   ├── bookSeat.ts       # POST /tickets/book (Anti "War Tiket")
+│   │   │   ├── enqueueBooking.ts # POST /tickets/book (SQS Producer)
+│   │   │   ├── bookSeat.ts       # SQS Consumer (OCC Concurrency Lock Worker)
+│   │   │   ├── simulatePayment.ts# POST /tickets/simulate-payment (EventBridge Emitter)
+│   │   │   ├── generateTicketPdf.ts # Step Functions Task 1 (S3 PDF Generator)
+│   │   │   ├── broadcastNotification.ts # Step Functions Task 2 (SNS Publisher)
+│   │   │   ├── getAdminStats.ts  # GET /admin/stats (Cognito Protected)
 │   │   │   ├── getBookingStatus.ts # GET /bookings/status
-│   │   │   └── initDB.ts         # Manual Lambda Trigger: Serverless Database Init & Seeding
+│   │   │   └── initDB.ts         # Serverless DB Init & Seeding (Manual trigger)
 │   │   ├── utils/
 │   │   │   ├── apiResponse.ts    # Standard API Gateway response formatting + CORS
+│   │   │   ├── awsClients.ts     # Reusable AWS SDK v3 singletons (SQS, EventBridge, SNS)
 │   │   │   └── types.ts          # Backend TypeScript interfaces
 │   │   └── devServer.ts          # Local dev API Gateway runner (port 3000)
-│   ├── .env                      # DATABASE_URL, PORT, AWS_REGION
-│   ├── .env.example
-│   ├── package.json
-│   ├── serverless.yml            # IaC Serverless Framework definition
-│   └── tsconfig.json
+│   ├── package.json              # Include @aws-sdk clients & step functions plugin
+│   └── serverless.yml            # Complete Serverless IaC + EDA resources
 │
 ├── AGENTS.md                     # Engineering constraints & guidelines
 └── README.md                     # Dokumentasi arsitektur & panduan sistem
@@ -106,38 +163,19 @@ ticket-booking/
 
 Semua endpoint mengembalikan respons standar format `{ "success": boolean, "data": ..., "message": ... }`:
 
-| Method | Endpoint | Request Params / Body | Deskripsi & Fungsi | File Handler |
+| Method | Endpoint | Trigger / Event | Deskripsi & Fungsi | File Handler |
 | :--- | :--- | :--- | :--- | :--- |
-| `GET` | `/health` | *(None)* | Cek status kesehatan dan uptime backend API | [`health.ts`](backend/src/handlers/health.ts) |
-| `GET` | `/events` | `?slug=...` *(opsional)* | Mengambil detail konser, lokasi GBK, dan tanggal pelaksanaan | [`getEvents.ts`](backend/src/handlers/getEvents.ts) |
-| `GET` | `/tickets/tiers` | `?eventId=...` *(opsional)* | Mengambil daftar kategori tiket (*FESTIVAL A/B, VIP*), harga, kuota real-time | [`getTicketTiers.ts`](backend/src/handlers/getTicketTiers.ts) |
-| `POST` | `/tickets/book` | **Body (JSON):**<br>`ticketTierId`, `customerName`, `customerEmail`, `customerPhone`, `quantity` (1-4), `paymentMethod` (`qris`/`va`) | Pemesanan tiket dengan transaksi atomik dan penguncian optimistik | [`bookSeat.ts`](backend/src/handlers/bookSeat.ts) |
-| `GET` | `/bookings/status` | `?code=...` atau `?email=...` | Memeriksa rincian e-tiket, QR payload, dan verifikasi pembayaran | [`getBookingStatus.ts`](backend/src/handlers/getBookingStatus.ts) |
-
-> **Catatan Fungsi Khusus (`initDB`):**  
-> Fungsi Lambda `initDB` ([`backend/src/handlers/initDB.ts`](backend/src/handlers/initDB.ts)) tidak di-attach ke endpoint HTTP publik demi alasan keamanan. Fungsi ini dijalankan secara manual *(one-time initialization)* melalui AWS Management Console atau AWS CLI untuk membuat tabel dan melakukan data seeding.
-
----
-
-## Concurrency & "War Tiket" Protection
-
-Pada `backend/src/handlers/bookSeat.ts`:
-1. Kolom `version` pada tabel `TicketTier` digunakan sebagai penanda versi transaksi.
-2. Saat pemesanan masuk, query update dieksekusi secara atomik dalam `prisma.$transaction`:
-   ```ts
-   const updateResult = await tx.ticketTier.updateMany({
-     where: {
-       id: ticketTierId,
-       version: currentTier.version,
-       availableQuota: { gte: quantity },
-     },
-     data: {
-       availableQuota: { decrement: quantity },
-       version: { increment: 1 },
-     },
-   });
-   ```
-3. Jika dua atau lebih Lambda mencoba memesan sisa tiket terakhir di detik yang sama, hanya satu yang berhasil meng-increment `version`. Transaksi lain yang mendeteksi `updateResult.count === 0` akan melakukan *retry* dengan *exponential backoff jitter* atau menolak dengan HTTP `409 Conflict (Sold Out)` untuk mencegah double-booking.
+| `GET` | `/health` | API Gateway HTTP | Cek status kesehatan dan uptime backend API | [`health.ts`](backend/src/handlers/health.ts) |
+| `GET` | `/events` | API Gateway HTTP | Mengambil detail konser, lokasi GBK, dan tanggal | [`getEvents.ts`](backend/src/handlers/getEvents.ts) |
+| `GET` | `/tickets/tiers` | API Gateway HTTP | Mengambil daftar kategori tiket (*FESTIVAL A/B, VIP*), kuota live | [`getTicketTiers.ts`](backend/src/handlers/getTicketTiers.ts) |
+| `POST` | `/tickets/book` | API Gateway HTTP | Memasukkan booking ke antrean `BookingQueue` (SQS Producer) | [`enqueueBooking.ts`](backend/src/handlers/enqueueBooking.ts) |
+| `N/A` | `N/A` | Amazon SQS Event | Worker pemesanan tiket dengan transaksi atomik dan OCC | [`bookSeat.ts`](backend/src/handlers/bookSeat.ts) |
+| `POST` | `/tickets/simulate-payment` | API Gateway HTTP | Update status `PAID` dan emit event `OrderPaid` ke EventBridge | [`simulatePayment.ts`](backend/src/handlers/simulatePayment.ts) |
+| `N/A` | `N/A` | Step Functions Task 1 | Simulasi render file PDF e-tiket ke bucket S3 | [`generateTicketPdf.ts`](backend/src/handlers/generateTicketPdf.ts) |
+| `N/A` | `N/A` | Step Functions Task 2 | Broadcast konfirmasi pemesanan ke topik Amazon SNS | [`broadcastNotification.ts`](backend/src/handlers/broadcastNotification.ts) |
+| `GET` | `/admin/stats` | HTTP (Cognito JWT) | Statistik promotor, revenue, live inventory, log audit transaksi | [`getAdminStats.ts`](backend/src/handlers/getAdminStats.ts) |
+| `GET` | `/bookings/status` | API Gateway HTTP | Memeriksa rincian e-tiket, QR payload, dan verifikasi pembayaran | [`getBookingStatus.ts`](backend/src/handlers/getBookingStatus.ts) |
+| `N/A` | `N/A` | Manual Lambda Invoke | Inisialisasi DDL skema dan data seeder konser | [`initDB.ts`](backend/src/handlers/initDB.ts) |
 
 ---
 
@@ -168,10 +206,11 @@ npm run dev
 # Server aktif di http://localhost:3000/dev
 ```
 
-Untuk memverifikasi backend:
+Untuk memverifikasi endpoint:
 ```bash
 curl http://localhost:3000/dev/health
 curl http://localhost:3000/dev/tickets/tiers
+curl http://localhost:3000/dev/admin/stats
 ```
 
 ### 3. Frontend (Port 5173)
@@ -186,53 +225,19 @@ cd frontend
 npm install
 npm run dev
 # Buka http://localhost:5173 di browser
-```
-
-Build produksi:
-```bash
-npm run build
+# Buka http://localhost:5173/admin untuk Operator Console
 ```
 
 ---
 
-### 4. Database Initialization (Serverless Lambda Alternative)
+## CI/CD Deployment via GitHub Actions
 
-Untuk inisialisasi skema tabel database dan *data seeding* konser, pengembang/administrator kini memiliki **dua pilihan pendekatan**:
+Repositori dilengkapi dengan dua alur kerja GitHub Actions otomatis di direktori `.github/workflows/`:
 
-#### a) Pilihan A: Metode EC2 Bastion Host / CLI Lokal (Tradisional)
-Jika Anda memiliki akses CLI/terminal langsung ke jaringan database (misalnya koneksi lokal, VPN, atau instance EC2 Bastion Host di dalam VPC yang sama dengan Amazon RDS):
-```bash
-cd backend
-# 1. Terapkan skema Prisma ke PostgreSQL
-npx prisma db push
-
-# 2. Jalankan seeding data konser & tiket
-npm run prisma:seed
-```
-
-#### b) Pilihan B: Metode Pure Serverless (Tanpa Akses EC2 CLI)
-Jika database berada di dalam *private subnet* VPC AWS tanpa instance EC2 Bastion Host atau akses CLI langsung, gunakan fungsi Lambda `initDB`:
-1. **Deploy Stack Serverless**:
-   ```bash
-   cd backend
-   npx serverless deploy
-   ```
-2. **Jalankan Inisialisasi melalui AWS Management Console**:
-   - Masuk ke **AWS Management Console** & buka layanan **AWS Lambda**.
-   - Cari dan buka fungsi Lambda: `ticket-booking-api-<stage>-initDB` (misal: `ticket-booking-api-dev-initDB`).
-   - Masuk ke tab **Test**.
-   - Berikan nama test event (misal: `ManualInitDB`) dengan payload JSON kosong `{}`.
-   - Klik tombol **Test** berwarna oranye.
-3. **Alternatif via AWS CLI**:
-   ```bash
-   aws lambda invoke \
-     --function-name ticket-booking-api-dev-initDB \
-     --payload '{}' \
-     response.json
-   cat response.json
-   ```
-
-Fungsi `initDB` akan secara otomatis:
-- Menjalankan kueri raw SQL DDL `CREATE TABLE IF NOT EXISTS` via `prisma.$executeRawUnsafe()` untuk tipe enum `PaymentStatus`, tabel `events`, `ticket_tiers`, `bookings`, dan semua indeks terkait.
-- Melakukan *data seeding* menggunakan `prisma.event.upsert` dan `prisma.ticketTier.upsert` sehingga aman dijalankan berulang kali tanpa risiko duplikasi data.
-- Mengembalikan respons JSON standar `{ "statusCode": 200, "body": "..." }`.
+1. **Frontend CI/CD (`frontend-deploy.yml`)**:
+   - Terpicu saat push ke `main`/`master` pada path `frontend/**`.
+   - Menginstal dependensi (`npm ci`), memvalidasi TypeScript, dan membuat build produksi (`npm run build`).
+2. **Backend CI/CD (`backend-deploy.yml`)**:
+   - Terpicu saat push ke `main`/`master` pada path `backend/**`.
+   - Mengonfigurasi kredensial AWS via GitHub Secrets (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`).
+   - Menjalankan `npx prisma generate` dan mendeply seluruh stack Serverless ke lingkungan produksi AWS (`npx serverless deploy --stage prod`).
