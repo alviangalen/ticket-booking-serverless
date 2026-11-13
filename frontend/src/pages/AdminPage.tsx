@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Authenticator } from "@aws-amplify/ui-react";
 import {
-  ShieldAlert,
   Radio,
   Zap,
   TrendingUp,
@@ -12,7 +11,6 @@ import {
   ArrowLeft,
   CheckCircle2,
   Clock,
-  Sparkles,
   Server,
   Cpu,
   Layers,
