@@ -163,20 +163,19 @@ ticket-booking/
 
 Semua endpoint mengembalikan respons standar format `{ "success": boolean, "data": ..., "message": ... }`:
 
-| Method | Endpoint | Trigger / Event | Deskripsi & Fungsi | File Handler |
-| :--- | :--- | :--- | :--- | :--- |
-| `GET` | `/health` | API Gateway HTTP | Cek status kesehatan dan uptime backend API | [`health.ts`](backend/src/handlers/health.ts) |
-| `GET` | `/events` | API Gateway HTTP | Mengambil detail konser, lokasi GBK, dan tanggal | [`getEvents.ts`](backend/src/handlers/getEvents.ts) |
-| `GET` | `/tickets/tiers` | API Gateway HTTP | Mengambil daftar kategori tiket (*FESTIVAL A/B, VIP*), kuota live | [`getTicketTiers.ts`](backend/src/handlers/getTicketTiers.ts) |
-| `POST` | `/tickets/book` | API Gateway HTTP | Memasukkan booking ke antrean `BookingQueue` (SQS Producer) | [`enqueueBooking.ts`](backend/src/handlers/enqueueBooking.ts) |
-| `N/A` | `N/A` | Amazon SQS Event | Worker pemesanan tiket dengan transaksi atomik dan OCC | [`bookSeat.ts`](backend/src/handlers/bookSeat.ts) |
-| `POST` | `/tickets/simulate-payment` | API Gateway HTTP | Update status `PAID` dan emit event `OrderPaid` ke EventBridge | [`simulatePayment.ts`](backend/src/handlers/simulatePayment.ts) |
-| `N/A` | `N/A` | Step Functions Task 1 | Simulasi render file PDF e-tiket ke bucket S3 | [`generateTicketPdf.ts`](backend/src/handlers/generateTicketPdf.ts) |
-| `N/A` | `N/A` | Step Functions Task 2 | Broadcast konfirmasi pemesanan ke topik Amazon SNS | [`broadcastNotification.ts`](backend/src/handlers/broadcastNotification.ts) |
-| `GET` | `/admin/stats` | HTTP (Cognito JWT) | Statistik promotor, revenue, live inventory, log audit transaksi | [`getAdminStats.ts`](backend/src/handlers/getAdminStats.ts) |
-| `GET` | `/bookings/status` | API Gateway HTTP | Memeriksa rincian e-tiket, QR payload, dan verifikasi pembayaran | [`getBookingStatus.ts`](backend/src/handlers/getBookingStatus.ts) |
-| `N/A` | `N/A` | Manual Lambda Invoke | Inisialisasi DDL skema dan data seeder konser | [`initDB.ts`](backend/src/handlers/initDB.ts) |
-
+| Method | Endpoint | Trigger / Event | Deskripsi & Fungsi | File Handler | Lambda ENV |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `GET` | `/health` | API Gateway HTTP | Cek status kesehatan dan uptime backend API | [`health.ts`](backend/src/handlers/health.ts) | `-` |
+| `GET` | `/events` | API Gateway HTTP | Mengambil detail konser, lokasi GBK, dan tanggal | [`getEvents.ts`](backend/src/handlers/getEvents.ts) | `-` |
+| `GET` | `/tickets/tiers` | API Gateway HTTP | Mengambil daftar kategori tiket (*FESTIVAL A/B, VIP*), kuota live | [`getTicketTiers.ts`](backend/src/handlers/getTicketTiers.ts) | `-` |
+| `POST` | `/tickets/book` | API Gateway HTTP | Memasukkan booking ke antrean `BookingQueue` (SQS Producer) | [`enqueueBooking.ts`](backend/src/handlers/enqueueBooking.ts) | `BOOKING_QUEUE_URL` |
+| `-` | `-` | Amazon SQS Event | Worker pemesanan tiket dengan transaksi atomik dan OCC | [`bookSeat.ts`](backend/src/handlers/bookSeat.ts) | `-` |
+| `POST` | `/tickets/simulate-payment` | API Gateway HTTP | Update status `PAID` dan emit event `OrderPaid` ke EventBridge | [`simulatePayment.ts`](backend/src/handlers/simulatePayment.ts) | `EVENT_BUS_NAME` |
+| `-` | `-` | Step Functions Task 1 | Simulasi render file PDF e-tiket ke bucket S3 | [`generateTicketPdf.ts`](backend/src/handlers/generateTicketPdf.ts) | `TICKET_BUCKET` |
+| `-` | `-` | Step Functions Task 2 | Broadcast konfirmasi pemesanan ke topik Amazon SNS | [`broadcastNotification.ts`](backend/src/handlers/broadcastNotification.ts) | `SNS_TOPIC_ARN` |
+| `GET` | `/admin/stats` | HTTP (Cognito JWT) | Statistik promotor, revenue, live inventory, log audit transaksi | [`getAdminStats.ts`](backend/src/handlers/getAdminStats.ts) | `-` |
+| `GET` | `/bookings/status` | API Gateway HTTP | Memeriksa rincian e-tiket, QR payload, dan verifikasi pembayaran | [`getBookingStatus.ts`](backend/src/handlers/getBookingStatus.ts) | `-` |
+| `-` | `-` | Manual Lambda Invoke | Inisialisasi DDL skema dan data seeder konser | [`initDB.ts`](backend/src/handlers/initDB.ts) | `-` |
 ---
 
 ## Panduan Menjalankan Aplikasi

@@ -1,3 +1,4 @@
+import { fetchAuthSession } from "aws-amplify/auth";
 import {
   ApiResponse,
   BookingRequest,
@@ -88,9 +89,54 @@ export const apiService = {
   },
 
   /**
-   * Fetch real-time Admin Metrics and Promoter Dashboard data
+   * Fetch real-time Admin Metrics and Promoter Dashboard data.
+   * Dynamically injects Cognito ID Token via Amplify v6 fetchAuthSession.
    */
-  async getAdminStats(authToken?: string): Promise<AdminStatsData> {
+  async getAdminStats(authToken?: string): Promise<AdminStatsData | null> {
+    let token = authToken;
+    if (!token) {
+      const session = await fetchAuthSession();
+      token = session.tokens?.idToken?.toString();
+    }
+
+    if (!token) {
+      throw new Error("Token sesi Cognito tidak ditemukan. Silakan login kembali.");
+    }
+
+    const response = await fetch(`${API_BASE_URL}/admin/stats`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      let errorDetail = `${response.status}: ${response.statusText}`;
+      try {
+        const errorBody = (await response.json()) as { error?: string; message?: string };
+        errorDetail = errorBody.error || errorBody.message || errorDetail;
+      } catch {
+        // Ignore parse failure if response body is not JSON
+      }
+      throw new Error(`Gagal mengambil statistik admin (${errorDetail})`);
+    }
+
+    const json: ApiResponse<AdminStatsData> = await response.json();
+    if (!json.success) {
+      throw new Error(json.error || "Gagal mengambil statistik admin dari server.");
+    }
+
+    return json.data ?? null;
+  },
+
+  /**
+   * Simulate payment confirmation and trigger EventBridge OrderPaid event
+   */
+  async simulatePayment(
+    bookingIdentifier: string,
+    authToken?: string
+  ): Promise<PaymentSimulationResult> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
@@ -98,32 +144,9 @@ export const apiService = {
       headers["Authorization"] = `Bearer ${authToken}`;
     }
 
-    const response = await fetch(`${API_BASE_URL}/admin/stats`, {
-      method: "GET",
-      headers,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Gagal mengambil statistik admin (${response.status}: ${response.statusText})`);
-    }
-
-    const json: ApiResponse<AdminStatsData> = await response.json();
-    if (!json.success || !json.data) {
-      throw new Error(json.error || "Data statistik admin kosong atau tidak valid.");
-    }
-
-    return json.data;
-  },
-
-  /**
-   * Simulate payment confirmation and trigger EventBridge OrderPaid event
-   */
-  async simulatePayment(bookingIdentifier: string): Promise<PaymentSimulationResult> {
     const response = await fetch(`${API_BASE_URL}/tickets/simulate-payment`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers,
       body: JSON.stringify({ bookingId: bookingIdentifier }),
     });
 

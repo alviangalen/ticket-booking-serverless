@@ -76,8 +76,16 @@ export interface AdminRecentBooking {
   totalPrice: number;
   formattedPrice: string;
   paymentMethod: string;
-  paymentStatus: "PENDING" | "PAID" | "CANCELLED";
+  paymentStatus: "PENDING" | "PAID" | "CANCELLED" | "EXPIRED";
   createdAt: string;
+}
+
+export interface AdminOperatorUser {
+  username?: string;
+  userId?: string;
+  signInDetails?: {
+    loginId?: string;
+  };
 }
 
 export interface AdminStatsData {
